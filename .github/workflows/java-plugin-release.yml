@@ -55,7 +55,9 @@ jobs:
         run: ./gradlew release -Prelease.scope=${{ steps.scope.outputs.SCOPE }} -Prelease.disableSnapshotsCheck --stacktrace
       - name: Read version
         id: ver
-        run: echo "VERSION=$(./gradlew -q currentVersion)" >> $GITHUB_OUTPUT
+        run: |
+          version="$(git describe --tags --abbrev=0 | sed 's/^v//')"
+          echo "VERSION=$version" >> "$GITHUB_OUTPUT"
 
       # --- Build shaded jar
       - name: Build shaded jar

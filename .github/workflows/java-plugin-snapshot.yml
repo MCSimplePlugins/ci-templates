@@ -94,7 +94,7 @@ jobs:
         run: |
           FILE=$(ls build/libs/*.jar | head -n 1)
           echo "FILE=$FILE" >> $GITHUB_OUTPUT
-          echo "NAME=$(basename "$FILE")" >> $GITHUB_OUTPUT
+          echo "VER=$(basename "$FILE")" >> $GITHUB_OUTPUT
 
       - name: SHA256
         run: sha256sum "${{ steps.artifact.outputs.FILE }}" | awk '{print $1}' > "${{ steps.artifact.outputs.FILE }}.sha256"
@@ -113,7 +113,6 @@ jobs:
           CHAN=snapshots
           VER="${{ steps.snap.outputs.VERSION }}"
           MCVER="${{ steps.mc.outputs.MC_VERSION }}"
-          NAME="${{ steps.artifact.outputs.NAME }}"
           FILE="${{ steps.artifact.outputs.FILE }}"
           BASE="${{ secrets.R2_PUBLIC_BASE }}/${PROJECT_SLUG}/${CHAN}/${VER}"
 
@@ -123,15 +122,15 @@ jobs:
             "channel": "snapshot",
             "version": "${VER}",
             "minecraft": "${MCVER}",
-            "artifact": "${NAME}",
-            "download": "${BASE}/${NAME}",
-            "checksum": "${BASE}/${NAME}.sha256",
+            "artifact": "${VER}",
+            "download": "${BASE}/${VER}",
+            "checksum": "${BASE}/${VER}.sha256",
             "timestamp": "${{ github.event.head_commit.timestamp }}"
           }
           JSON
 
-          aws s3 cp "$FILE"          "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}"         --endpoint-url "$R2_ENDPOINT"
-          aws s3 cp "${FILE}.sha256" "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}.sha256"  --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "$FILE"          "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/${VER}/${VER}"         --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "${FILE}.sha256" "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/${VER}/${VER}.sha256"  --endpoint-url "$R2_ENDPOINT"
           aws s3 cp manifest.json    "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json"   --endpoint-url "$R2_ENDPOINT"
 
           # latest.json for snapshots

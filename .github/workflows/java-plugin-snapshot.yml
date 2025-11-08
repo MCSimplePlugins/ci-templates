@@ -56,7 +56,7 @@ jobs:
       - name: Find artifact
         id: artifact
         run: |
-          FILE=$(ls build/libs/*-all.jar | head -n 1)
+          FILE=$(ls build/libs/*.jar | head -n 1)
           echo "FILE=$FILE" >> $GITHUB_OUTPUT
           echo "NAME=$(basename "$FILE")" >> $GITHUB_OUTPUT
 

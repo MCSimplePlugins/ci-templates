@@ -129,7 +129,7 @@ jobs:
             "project": "${PROJECT_SLUG}",
             "channel": "snapshot",
             "version": "${VER}",
-            "minecraft": "${MCVER}"
+            "minecraft": "${MCVER}",
             "artifact": "${NAME}",
             "download": "${BASE}/${NAME}",
             "checksum": "${BASE}/${NAME}.sha256",

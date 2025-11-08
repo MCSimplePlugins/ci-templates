@@ -8,7 +8,7 @@ on:
         default: '21'
       project_slug:
         type: string
-        default: '${{ github.event.repository.name }}'
+        default: ''
     secrets:
       R2_ACCOUNT_ID: { required: true }
       R2_ACCESS_KEY_ID: { required: true }
@@ -22,105 +22,101 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
     env:
-      PROJECT_SLUG: ${{ inputs.project_slug }}
+      PROJECT_SLUG: >-
+        ${{ inputs.project_slug != '' && inputs.project_slug || github.event.repository.name }}
       R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+
     steps:
-      - name: Checkout (internal)
-        shell: bash
-        env:
-          REF: ${{ github.ref }}
-          REF_NAME: ${{ github.ref_name }}
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
-          git fetch --prune --tags origin "+refs/heads/*:refs/remotes/origin/*"
-          git checkout -B "${REF_NAME}" "origin/${REF_NAME}" || git checkout "${REF}"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install Java ${{ inputs.java }} + tools
-        run: |
-          set -euo pipefail
-          sudo apt-get update -y
-          sudo apt-get install -y openjdk-${{ inputs.java }}-jdk jq curl python3-pip
-          pip3 install --user awscli
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          aws --version
-          java -version
-          jq --version
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java }}
 
-      - name: Make Gradle wrapper executable
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Make wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Compute snapshot version
-        id: ver
+      # Snapshot version derived from commit short SHA
+      - name: Determine snapshot version
+        id: snap
         run: |
-          set -euo pipefail
-          DATE=$(date -u +%Y%m%d)
-          SHORTSHA=$(git rev-parse --short HEAD)
-          BASE=$(./gradlew -q currentVersion | sed 's/-SNAPSHOT//')
-          echo "SNAPSHOT=${BASE}-dev.${DATE}+${SHORTSHA}" >> $GITHUB_OUTPUT
+          SHA=$(git rev-parse --short HEAD)
+          SNAP="0.0.0-${SHA}-SNAPSHOT"
+          echo "VERSION=$SNAP" >> $GITHUB_OUTPUT
 
-      - name: Build shaded jar
-        run: ./gradlew clean shadowJar -Pversion=${{ steps.ver.outputs.SNAPSHOT }} --stacktrace
+      - name: Build snapshot jar
+        run: ./gradlew clean shadowJar -Pversion=${{ steps.snap.outputs.VERSION }} --stacktrace
 
-      - name: Locate artifact and checksum
+      - name: Find artifact
         id: artifact
         run: |
-          set -euo pipefail
           FILE=$(ls build/libs/*-all.jar | head -n 1)
           echo "FILE=$FILE" >> $GITHUB_OUTPUT
           echo "NAME=$(basename "$FILE")" >> $GITHUB_OUTPUT
-          sha256sum "$FILE" | awk '{print $1}' > "${FILE}.sha256"
 
-      - name: Upload snapshot to R2 + manifests
+      - name: SHA256
+        run: sha256sum "${{ steps.artifact.outputs.FILE }}" | awk '{print $1}' > "${{ steps.artifact.outputs.FILE }}.sha256"
+
+      - name: Install tools
+        run: |
+          pipx install awscli
+          sudo apt-get update -y && sudo apt-get install -y jq curl
+
+      - name: Upload snapshot to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
         run: |
-          set -euo pipefail
-          CHAN="snapshots"
-          VER="${{ steps.ver.outputs.SNAPSHOT }}"
+          CHAN=snapshots
+          VER="${{ steps.snap.outputs.VERSION }}"
           NAME="${{ steps.artifact.outputs.NAME }}"
           FILE="${{ steps.artifact.outputs.FILE }}"
           BASE="${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}"
 
-          # per-version manifest
           cat > manifest.json <<JSON
-          { "project": "${PROJECT_SLUG}", "channel": "snapshot", "version": "${VER}",
-            "artifact": "${NAME}", "download": "${BASE}/${NAME}",
-            "checksum": "${BASE}/${NAME}.sha256", "released": "${{ github.event.head_commit.timestamp }}" }
+          {
+            "project": "${PROJECT_SLUG}",
+            "channel": "snapshot",
+            "version": "${VER}",
+            "artifact": "${NAME}",
+            "download": "${BASE}/${NAME}",
+            "checksum": "${BASE}/${NAME}.sha256",
+            "timestamp": "${{ github.event.head_commit.timestamp }}"
+          }
           JSON
 
-          # uploads
-          aws s3 cp "$FILE"           "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}"           --endpoint-url "$R2_ENDPOINT"
-          aws s3 cp "${FILE}.sha256"  "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}.sha256"    --endpoint-url "$R2_ENDPOINT"
-          aws s3 cp manifest.json     "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json"     --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "$FILE"          "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}"         --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "${FILE}.sha256" "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}.sha256"  --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp manifest.json    "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json"   --endpoint-url "$R2_ENDPOINT"
 
-          # latest.json
+          # latest.json for snapshots
           cat > latest.json <<JSON
           { "version": "${VER}",
             "manifest": "${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json" }
           JSON
           aws s3 cp latest.json "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/latest.json" --endpoint-url "$R2_ENDPOINT"
 
-          # index.json
+          # build index.json (snapshot list)
           aws s3api list-objects-v2 --bucket "${{ secrets.R2_BUCKET }}" \
             --prefix "projects/${PROJECT_SLUG}/${CHAN}/" --delimiter "/" \
             --endpoint-url "$R2_ENDPOINT" > list.json
+
           VERS=$(jq -r '.CommonPrefixes[].Prefix' list.json | sed "s#projects/${PROJECT_SLUG}/${CHAN}/##; s#/\$##" | grep -v '^latest$' || true)
 
           echo '{ "project": "'${PROJECT_SLUG}'", "channel": "snapshot", "versions": [' > index.json
           FIRST=1
           for v in $VERS; do
             MAN="${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${v}/manifest.json"
-            REL=$(curl -fsSL "$MAN" | jq -r '.released // empty' || true)
+            TIM=$(curl -fsSL "$MAN" | jq -r '.timestamp // empty' || true)
             [ $FIRST -eq 0 ] && echo ',' >> index.json
-            echo '{ "version": "'$v'", "manifest": "'$MAN'"'$( [ -n "$REL" ] && echo ', "released": "'$REL'"' )'}' >> index.json
+            echo '{ "version": "'$v'", "manifest": "'$MAN'"'$( [ -n "$TIM" ] && echo ', "timestamp": "'$TIM'"' )'}' >> index.json
             FIRST=0
           done
           echo '] }' >> index.json
@@ -130,8 +126,6 @@ jobs:
         if: always()
         run: |
           [ -z "${{ secrets.DISCORD_WEBHOOK }}" ] && exit 0
-          STATUS="${{ job.status }}"
-          VER="${{ steps.ver.outputs.SNAPSHOT }}"
           curl -H "Content-Type: application/json" -X POST \
-            -d "{\"content\":\"📦 Snapshot **${STATUS}**\\nProject: \`${{ env.PROJECT_SLUG }}\`\\nVersion: \`${VER}\`\\nRepo: ${{ github.repository }}\"}" \
+            -d "{\"content\":\"⚙️ Snapshot build: \`${{ steps.snap.outputs.VERSION }}\` for project \`${{ env.PROJECT_SLUG }}\`\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"

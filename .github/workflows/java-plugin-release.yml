@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           CHAN=releases
-          VER="${{ steps.snap.outputs.VERSION }}"
+          VER="${{ steps.ver.outputs.VERSION }}"
           MCVER="${{ steps.mc.outputs.MC_VERSION }}"
           NAME="${{ steps.artifact.outputs.NAME }}"
           FILE="${{ steps.artifact.outputs.FILE }}"

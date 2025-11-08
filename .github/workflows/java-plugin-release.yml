@@ -26,28 +26,39 @@ jobs:
     env:
       PROJECT_SLUG: ${{ inputs.project_slug }}
       R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout (internal)
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+          git fetch --prune --tags origin "+refs/heads/*:refs/remotes/origin/*"
+          git checkout -B "${REF_NAME}" "origin/${REF_NAME}" || git checkout "${REF}"
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ inputs.java }}
+      - name: Install Java ${{ inputs.java }} + tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y openjdk-${{ inputs.java }}-jdk jq curl python3-pip
+          pip3 install --user awscli
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          aws --version
+          java -version
+          jq --version
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/wrapper
-            ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: ${{ runner.os }}-gradle-
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
 
-      - name: Decide bump scope
+      - name: Decide bump scope (Conventional Commits)
         id: scope
         run: |
+          set -euo pipefail
           LOG=$(git log --pretty=%B -n 50)
           SCOPE=patch
           echo "$LOG" | grep -Ei '(^feat!|BREAKING CHANGE)' && SCOPE=major || true
@@ -64,31 +75,14 @@ jobs:
       - name: Build shaded jar
         run: ./gradlew clean shadowJar --stacktrace
 
-      - name: Find artifact
+      - name: Locate artifact and checksum
         id: artifact
         run: |
+          set -euo pipefail
           FILE=$(ls build/libs/*-all.jar | head -n 1)
           echo "FILE=$FILE" >> $GITHUB_OUTPUT
           echo "NAME=$(basename "$FILE")" >> $GITHUB_OUTPUT
-
-      - name: SHA256
-        run: sha256sum "${{ steps.artifact.outputs.FILE }}" | awk '{print $1}' > "${{ steps.artifact.outputs.FILE }}.sha256"
-
-      - name: GitHub Release (mirror)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.VERSION }}
-          name: v${{ steps.ver.outputs.VERSION }}
-          generate_release_notes: true
-          files: |
-            ${{ steps.artifact.outputs.FILE }}
-            ${{ steps.artifact.outputs.FILE }}.sha256
-
-      - name: Install tools
-        run: |
-          pipx install awscli
-          sudo apt-get update -y
-          sudo apt-get install -y jq curl
+          sha256sum "$FILE" | awk '{print $1}' > "${FILE}.sha256"
 
       - name: Upload release to R2 + manifests
         env:
@@ -96,34 +90,33 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
         run: |
-          CHAN=releases
+          set -euo pipefail
+          CHAN="releases"
           VER="${{ steps.ver.outputs.VERSION }}"
           NAME="${{ steps.artifact.outputs.NAME }}"
           FILE="${{ steps.artifact.outputs.FILE }}"
           BASE="${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}"
 
+          # per-version manifest
           cat > manifest.json <<JSON
-          {
-            "project": "${PROJECT_SLUG}",
-            "channel": "release",
-            "version": "${VER}",
-            "artifact": "${NAME}",
-            "download": "${BASE}/${NAME}",
-            "checksum": "${BASE}/${NAME}.sha256",
-            "released": "${{ github.event.head_commit.timestamp }}"
-          }
+          { "project": "${PROJECT_SLUG}", "channel": "release", "version": "${VER}",
+            "artifact": "${NAME}", "download": "${BASE}/${NAME}",
+            "checksum": "${BASE}/${NAME}.sha256", "released": "${{ github.event.head_commit.timestamp }}" }
           JSON
 
+          # uploads
           aws s3 cp "$FILE"           "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}"           --endpoint-url "$R2_ENDPOINT"
           aws s3 cp "${FILE}.sha256"  "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}.sha256"    --endpoint-url "$R2_ENDPOINT"
           aws s3 cp manifest.json     "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json"     --endpoint-url "$R2_ENDPOINT"
 
+          # latest.json
           cat > latest.json <<JSON
           { "version": "${VER}",
             "manifest": "${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json" }
           JSON
           aws s3 cp latest.json "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/latest.json" --endpoint-url "$R2_ENDPOINT"
 
+          # index.json
           aws s3api list-objects-v2 --bucket "${{ secrets.R2_BUCKET }}" \
             --prefix "projects/${PROJECT_SLUG}/${CHAN}/" --delimiter "/" \
             --endpoint-url "$R2_ENDPOINT" > list.json
@@ -145,6 +138,8 @@ jobs:
         if: always()
         run: |
           [ -z "${{ secrets.DISCORD_WEBHOOK }}" ] && exit 0
+          STATUS="${{ job.status }}"
+          VER="${{ steps.ver.outputs.VERSION }}"
           curl -H "Content-Type: application/json" -X POST \
-            -d "{\"content\":\"✅ Release **${{ job.status }}**\\nProject: \`${{ env.PROJECT_SLUG }}\`\\nVersion: \`${{ steps.ver.outputs.VERSION }}\`\\nTag: v${{ steps.ver.outputs.VERSION }}\"}" \
+            -d "{\"content\":\"✅ Release **${STATUS}**\\nProject: \`${{ env.PROJECT_SLUG }}\`\\nVersion: \`${VER}\`\\nTag: v${VER}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"

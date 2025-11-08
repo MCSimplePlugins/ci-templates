@@ -71,7 +71,7 @@ jobs:
             fi
           fi
 
-          SNAP="${BASE}-S${NEXT_S}-SNAPSHOT"
+          SNAP="${BASE}-R${NEXT_S}-SNAPSHOT"
           echo "Base: $BASE"
           echo "Next S: $NEXT_S"
           echo "Computed snapshot: $SNAP"
@@ -79,6 +79,19 @@ jobs:
           echo "BASE=$BASE" >> "$GITHUB_OUTPUT"
           echo "SNUM=$NEXT_S" >> "$GITHUB_OUTPUT"
           echo "VERSION=$SNAP" >> "$GITHUB_OUTPUT"
+
+      - name: Derive Minecraft version from Paper API dep
+        id: mc
+        shell: bash
+        run: |
+          PVER="$(./gradlew -q dependencies --configuration compileClasspath \
+            | sed -n '/--- compileClasspath/,/---/p' \
+            | grep -E 'io\.papermc\.paper:paper-api:' \
+            | head -n1 \
+            | sed -E 's/.*io\.papermc\.paper:paper-api:([^ :]+).*/\1/' \
+          )"
+          MC="${PVER%%-*}"
+          echo "MC_VERSION=$MC" >> "$GITHUB_OUTPUT"
 
       - name: Build snapshot jar
         run: ./gradlew clean shadowJar -Pversion=${{ steps.snap.outputs.VERSION }} --stacktrace
@@ -93,7 +106,7 @@ jobs:
       - name: SHA256
         run: sha256sum "${{ steps.artifact.outputs.FILE }}" | awk '{print $1}' > "${{ steps.artifact.outputs.FILE }}.sha256"
 
-      - name: Install tools
+      - name: Install AWS CLI + jq
         run: |
           pipx install awscli
           sudo apt-get update -y && sudo apt-get install -y jq curl
@@ -106,6 +119,7 @@ jobs:
         run: |
           CHAN=snapshots
           VER="${{ steps.snap.outputs.VERSION }}"
+          MCVER="${{ steps.mc.outputs.MC_VERSION }}"
           NAME="${{ steps.artifact.outputs.NAME }}"
           FILE="${{ steps.artifact.outputs.FILE }}"
           BASE="${{ secrets.R2_PUBLIC_BASE }}/${PROJECT_SLUG}/${CHAN}/${VER}"
@@ -115,6 +129,7 @@ jobs:
             "project": "${PROJECT_SLUG}",
             "channel": "snapshot",
             "version": "${VER}",
+            "minecraft": "${MCVER}"
             "artifact": "${NAME}",
             "download": "${BASE}/${NAME}",
             "checksum": "${BASE}/${NAME}.sha256",
@@ -145,8 +160,13 @@ jobs:
           for v in $VERS; do
             MAN="${{ secrets.R2_PUBLIC_BASE }}/${PROJECT_SLUG}/${CHAN}/${v}/manifest.json"
             TIM=$(curl -fsSL "$MAN" | jq -r '.timestamp // empty' || true)
+            MC=$(curl -fsSL "$MAN" | jq -r '.minecraft // empty' || true)
             [ $FIRST -eq 0 ] && echo ',' >> index.json
-            echo '{ "version": "'$v'", "manifest": "'$MAN'"'$( [ -n "$TIM" ] && echo ', "timestamp": "'$TIM'"' )'}' >> index.json
+            EXTRA=""
+            [ -n "$TIM" ] && EXTRA="$EXTRA, \"timestamp\": \"$TIM\""
+            [ -n "$MC" ]  && EXTRA="$EXTRA, \"minecraft\": \"$MC\""
+
+            echo "{ \"version\": \"$v\", \"manifest\": \"$MAN\"$EXTRA }" >> index.json
             FIRST=0
           done
           echo '] }' >> index.json

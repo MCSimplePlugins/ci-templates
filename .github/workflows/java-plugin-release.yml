@@ -57,17 +57,10 @@ jobs:
           version="$(git describe --tags --abbrev=0 | sed 's/^v//')"
           echo "VERSION=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Derive Minecraft version from Paper API dep
+      - name: Derive Minecraft version
         id: mc
-        shell: bash
         run: |
-          PVER="$(./gradlew -q dependencies --configuration compileClasspath \
-            | sed -n '/--- compileClasspath/,/---/p' \
-            | grep -E 'io\.papermc\.paper:paper-api:' \
-            | head -n1 \
-            | sed -E 's/.*io\.papermc\.paper:paper-api:([^ :]+).*/\1/' \
-          )"
-          MC="${PVER%%-*}"
+          MC="$(./gradlew -q printMinecraftVersion)"
           echo "MC_VERSION=$MC" >> "$GITHUB_OUTPUT"
 
       - name: Build shaded jar

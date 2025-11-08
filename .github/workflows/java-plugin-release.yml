@@ -102,7 +102,7 @@ jobs:
           VER="${{ steps.ver.outputs.VERSION }}"
           NAME="${{ steps.artifact.outputs.NAME }}"
           FILE="${{ steps.artifact.outputs.FILE }}"
-          BASE="${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}"
+          BASE="${{ secrets.R2_PUBLIC_BASE }}/${PROJECT_SLUG}/${CHAN}/${VER}"
 
           cat > manifest.json <<JSON
           {
@@ -116,15 +116,15 @@ jobs:
           }
           JSON
 
-          aws s3 cp "$FILE"          "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}"         --endpoint-url "$R2_ENDPOINT"
-          aws s3 cp "${FILE}.sha256" "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}.sha256"  --endpoint-url "$R2_ENDPOINT"
-          aws s3 cp manifest.json    "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json"   --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "$FILE"          "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}"         --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "${FILE}.sha256" "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}.sha256"  --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp manifest.json    "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json"   --endpoint-url "$R2_ENDPOINT"
 
           cat > latest.json <<JSON
           { "version": "${VER}",
-            "manifest": "${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json" }
+            "manifest": "${{ secrets.R2_PUBLIC_BASE }}/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json" }
           JSON
-          aws s3 cp latest.json "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/latest.json" --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp latest.json "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/latest.json" --endpoint-url "$R2_ENDPOINT"
 
           aws s3api list-objects-v2 --bucket "${{ secrets.R2_BUCKET }}" \
             --prefix "projects/${PROJECT_SLUG}/${CHAN}/" --delimiter "/" \
@@ -134,14 +134,14 @@ jobs:
           echo '{ "project": "'${PROJECT_SLUG}'", "channel": "release", "versions": [' > index.json
           FIRST=1
           for v in $VERS; do
-            MAN="${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${v}/manifest.json"
+            MAN="${{ secrets.R2_PUBLIC_BASE }}/${PROJECT_SLUG}/${CHAN}/${v}/manifest.json"
             REL=$(curl -fsSL "$MAN" | jq -r '.released // empty' || true)
             [ $FIRST -eq 0 ] && echo ',' >> index.json
             echo '{ "version": "'$v'", "manifest": "'$MAN'"'$( [ -n "$REL" ] && echo ', "released": "'$REL'"' )'}' >> index.json
             FIRST=0
           done
           echo '] }' >> index.json
-          aws s3 cp index.json "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/index.json" --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp index.json "s3://${{ secrets.R2_BUCKET }}/${PROJECT_SLUG}/${CHAN}/index.json" --endpoint-url "$R2_ENDPOINT"
 
       - name: Discord notify
         if: always()

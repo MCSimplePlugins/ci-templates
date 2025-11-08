@@ -1,0 +1,143 @@
+name: Java Plugin Release (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      java:
+        type: string
+        default: '21'
+      project_slug:
+        type: string
+        default: '${{ github.event.repository.name }}'
+    secrets:
+      R2_ACCOUNT_ID: { required: true }
+      R2_ACCESS_KEY_ID: { required: true }
+      R2_SECRET_ACCESS_KEY: { required: true }
+      R2_BUCKET: { required: true }
+      R2_PUBLIC_BASE: { required: true }
+      DISCORD_WEBHOOK: { required: false }
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      PROJECT_SLUG: ${{ inputs.project_slug }}
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: ${{ inputs.java }} }
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/wrapper
+            ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Decide bump scope
+        id: scope
+        run: |
+          LOG=$(git log --pretty=%B -n 50)
+          SCOPE=patch
+          echo "$LOG" | grep -Ei '(^feat!|BREAKING CHANGE)' && SCOPE=major || true
+          [ "$SCOPE" = "patch" ] && echo "$LOG" | grep -E '^feat(\(|:)' && SCOPE=minor || true
+          echo "SCOPE=$SCOPE" >> $GITHUB_OUTPUT
+
+      - name: Axion release (tag & version)
+        run: ./gradlew release -Prelease.scope=${{ steps.scope.outputs.SCOPE }} --stacktrace
+
+      - name: Read version
+        id: ver
+        run: echo "VERSION=$(./gradlew -q currentVersion)" >> $GITHUB_OUTPUT
+
+      - name: Build shaded jar
+        run: ./gradlew clean shadowJar --stacktrace
+
+      - name: Find artifact
+        id: artifact
+        run: |
+          FILE=$(ls build/libs/*-all.jar | head -n 1)
+          echo "FILE=$FILE" >> $GITHUB_OUTPUT
+          echo "NAME=$(basename "$FILE")" >> $GITHUB_OUTPUT
+
+      - name: SHA256
+        run: sha256sum "${{ steps.artifact.outputs.FILE }}" | awk '{print $1}' > "${{ steps.artifact.outputs.FILE }}.sha256"
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.VERSION }}
+          name: v${{ steps.ver.outputs.VERSION }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.artifact.outputs.FILE }}
+            ${{ steps.artifact.outputs.FILE }}.sha256
+
+      - name: Install tools
+        run: |
+          pipx install awscli
+          sudo apt-get update -y && sudo apt-get install -y jq curl
+
+      - name: Upload release to R2 + manifests
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          CHAN=releases
+          VER="${{ steps.ver.outputs.VERSION }}"
+          NAME="${{ steps.artifact.outputs.NAME }}"
+          FILE="${{ steps.artifact.outputs.FILE }}"
+          BASE="${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}"
+
+          cat > manifest.json <<JSON
+          {
+            "project": "${PROJECT_SLUG}",
+            "channel": "release",
+            "version": "${VER}",
+            "artifact": "${NAME}",
+            "download": "${BASE}/${NAME}",
+            "checksum": "${BASE}/${NAME}.sha256",
+            "released": "${{ github.event.head_commit.timestamp }}"
+          }
+          JSON
+
+          aws s3 cp "$FILE"          "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}"         --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp "${FILE}.sha256" "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/${NAME}.sha256"  --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp manifest.json    "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json"   --endpoint-url "$R2_ENDPOINT"
+
+          cat > latest.json <<JSON
+          { "version": "${VER}",
+            "manifest": "${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${VER}/manifest.json" }
+          JSON
+          aws s3 cp latest.json "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/latest.json" --endpoint-url "$R2_ENDPOINT"
+
+          aws s3api list-objects-v2 --bucket "${{ secrets.R2_BUCKET }}" \
+            --prefix "projects/${PROJECT_SLUG}/${CHAN}/" --delimiter "/" \
+            --endpoint-url "$R2_ENDPOINT" > list.json
+          VERS=$(jq -r '.CommonPrefixes[].Prefix' list.json | sed "s#projects/${PROJECT_SLUG}/${CHAN}/##; s#/\$##" | grep -v '^latest$' || true)
+
+          echo '{ "project": "'${PROJECT_SLUG}'", "channel": "release", "versions": [' > index.json
+          FIRST=1
+          for v in $VERS; do
+            MAN="${{ secrets.R2_PUBLIC_BASE }}/projects/${PROJECT_SLUG}/${CHAN}/${v}/manifest.json"
+            REL=$(curl -fsSL "$MAN" | jq -r '.released // empty' || true)
+            [ $FIRST -eq 0 ] && echo ',' >> index.json
+            echo '{ "version": "'$v'", "manifest": "'$MAN'"'$( [ -n "$REL" ] && echo ', "released": "'$REL'"' )'}' >> index.json
+            FIRST=0
+          done
+          echo '] }' >> index.json
+          aws s3 cp index.json "s3://${{ secrets.R2_BUCKET }}/projects/${PROJECT_SLUG}/${CHAN}/index.json" --endpoint-url "$R2_ENDPOINT"
+
+      - name: Discord notify
+        if: always()
+        run: |
+          [ -z "${{ secrets.DISCORD_WEBHOOK }}" ] && exit 0
+          curl -H "Content-Type: application/json" -X POST \
+            -d "{\"content\":\"✅ Release **${{ job.status }}**\\nProject: \`${{ env.PROJECT_SLUG }}\`\\nVersion: \`${{ steps.ver.outputs.VERSION }}\`\\nTag: v${{ steps.ver.outputs.VERSION }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"

@@ -37,7 +37,6 @@ jobs:
           java-version: ${{ inputs.java }}
       - uses: gradle/actions/setup-gradle@v4
 
-      # --- Decide semver bump from Conventional Commits
       - name: Decide bump scope
         id: scope
         shell: bash
@@ -48,7 +47,6 @@ jobs:
           [ "$SCOPE" = "patch" ] && echo "$LOG" | grep -E '^feat(\(|:)' && SCOPE=minor || true
           echo "SCOPE=$SCOPE" >> $GITHUB_OUTPUT
 
-      # --- Tag & set version via Axion Release
       - name: Make wrapper executable
         run: chmod +x ./gradlew
       - name: Axion release (tag & version)
@@ -59,7 +57,19 @@ jobs:
           version="$(git describe --tags --abbrev=0 | sed 's/^v//')"
           echo "VERSION=$version" >> "$GITHUB_OUTPUT"
 
-      # --- Build shaded jar
+      - name: Derive Minecraft version from Paper API dep
+        id: mc
+        shell: bash
+        run: |
+          PVER="$(./gradlew -q dependencies --configuration compileClasspath \
+            | sed -n '/--- compileClasspath/,/---/p' \
+            | grep -E 'io\.papermc\.paper:paper-api:' \
+            | head -n1 \
+            | sed -E 's/.*io\.papermc\.paper:paper-api:([^ :]+).*/\1/' \
+          )"
+          MC="${PVER%%-*}"
+          echo "MC_VERSION=$MC" >> "$GITHUB_OUTPUT"
+
       - name: Build shaded jar
         run: ./gradlew clean shadowJar --stacktrace
 
@@ -74,18 +84,6 @@ jobs:
       - name: SHA256
         run: sha256sum "${{ steps.artifact.outputs.FILE }}" | awk '{print $1}' > "${{ steps.artifact.outputs.FILE }}.sha256"
 
-      # --- Optional: GitHub Release (free mirror)
-      - name: GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.VERSION }}
-          name: v${{ steps.ver.outputs.VERSION }}
-          generate_release_notes: true
-          files: |
-            ${{ steps.artifact.outputs.FILE }}
-            ${{ steps.artifact.outputs.FILE }}.sha256
-
-      # --- Upload to Cloudflare R2 & publish manifests
       - name: Install AWS CLI + jq
         run: |
           pipx install awscli
@@ -99,7 +97,8 @@ jobs:
         shell: bash
         run: |
           CHAN=releases
-          VER="${{ steps.ver.outputs.VERSION }}"
+          VER="${{ steps.snap.outputs.VERSION }}"
+          MCVER="${{ steps.mc.outputs.MC_VERSION }}"
           NAME="${{ steps.artifact.outputs.NAME }}"
           FILE="${{ steps.artifact.outputs.FILE }}"
           BASE="${{ secrets.R2_PUBLIC_BASE }}/${PROJECT_SLUG}/${CHAN}/${VER}"
@@ -109,6 +108,7 @@ jobs:
             "project": "${PROJECT_SLUG}",
             "channel": "release",
             "version": "${VER}",
+            "minecraft": "${MCVER}"
             "artifact": "${NAME}",
             "download": "${BASE}/${NAME}",
             "checksum": "${BASE}/${NAME}.sha256",
@@ -136,8 +136,13 @@ jobs:
           for v in $VERS; do
             MAN="${{ secrets.R2_PUBLIC_BASE }}/${PROJECT_SLUG}/${CHAN}/${v}/manifest.json"
             REL=$(curl -fsSL "$MAN" | jq -r '.released // empty' || true)
+            MC=$(curl -fsSL "$MAN" | jq -r '.minecraft // empty' || true)
             [ $FIRST -eq 0 ] && echo ',' >> index.json
-            echo '{ "version": "'$v'", "manifest": "'$MAN'"'$( [ -n "$REL" ] && echo ', "released": "'$REL'"' )'}' >> index.json
+            EXTRA=""
+            [ -n "$REL" ] && EXTRA="$EXTRA, \"timestamp\": \"$REL\""
+            [ -n "$MC" ]  && EXTRA="$EXTRA, \"minecraft\": \"$MC\""
+
+            echo "{ \"version\": \"$v\", \"manifest\": \"$MAN\"$EXTRA }" >> index.json
             FIRST=0
           done
           echo '] }' >> index.json

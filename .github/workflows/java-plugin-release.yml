@@ -50,7 +50,7 @@ jobs:
       - name: Make wrapper executable
         run: chmod +x ./gradlew
       - name: Axion release (tag & version)
-        run: ./gradlew release -Prelease.scope=${{ steps.scope.outputs.SCOPE }} -Prelease.disableSnapshotsCheck --stacktrace
+        run: ./gradlew release -Prelease.scope=${{ steps.scope.outputs.SCOPE }} -Prelease.disableSnapshotsCheck -Prelease.disableUncommittedCheck --stacktrace
       - name: Read version
         id: ver
         run: |

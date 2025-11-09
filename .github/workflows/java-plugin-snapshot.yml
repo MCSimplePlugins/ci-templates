@@ -51,33 +51,31 @@ jobs:
           if git tag --list 'v[0-9]*' | grep -q .; then
             BASE="$(git describe --tags --match 'v[0-9]*' --abbrev=0 | sed 's/^v//')"
           else
-            # Fallback if no release tag exists yet
             BASE="0.0.0"
           fi
 
           INDEX_URL="${{ secrets.R2_PUBLIC_BASE }}/${{ env.PROJECT_SLUG }}/snapshots/index.json"
-          NEXT_S=1
+          NEXT_R=1
           if curl -fsSL "$INDEX_URL" >/tmp/index.json 2>/dev/null; then
-            # Extract existing S numbers for this BASE and compute max
-            MAX_S=$(jq -r --arg base "$BASE" '
+            MAX_R=$(jq -r --arg base "$BASE" '
               (.versions // [])[]
               | .version
-              | select(startswith($base + "-S"))
-              | capture("^(?<b>[0-9]+\\.[0-9]+\\.[0-9]+)-S(?<s>[0-9]+)-SNAPSHOT$")
-              | .s
-              ' /tmp/index.json | sort -n | tail -n1)
-            if [ -n "${MAX_S:-}" ]; then
-              NEXT_S=$((MAX_S + 1))
+              | select(startswith($base + "-R"))
+              | capture("^(?<b>[0-9]+\\.[0-9]+\\.[0-9]+)-R(?<r>[0-9]+)-SNAPSHOT$")
+              | .r
+            ' /tmp/index.json | sort -n | tail -n1)
+            if [ -n "${MAX_R:-}" ]; then
+              NEXT_R=$((MAX_R + 1))
             fi
           fi
 
-          SNAP="${BASE}-R${NEXT_S}-SNAPSHOT"
+          SNAP="${BASE}-R${NEXT_R}-SNAPSHOT"
           echo "Base: $BASE"
-          echo "Next S: $NEXT_S"
+          echo "Next R: $NEXT_R"
           echo "Computed snapshot: $SNAP"
 
-          echo "BASE=$BASE" >> "$GITHUB_OUTPUT"
-          echo "SNUM=$NEXT_S" >> "$GITHUB_OUTPUT"
+          echo "BASE=$BASE"   >> "$GITHUB_OUTPUT"
+          echo "RNUM=$NEXT_R" >> "$GITHUB_OUTPUT"
           echo "VERSION=$SNAP" >> "$GITHUB_OUTPUT"
 
       - name: Derive Minecraft version

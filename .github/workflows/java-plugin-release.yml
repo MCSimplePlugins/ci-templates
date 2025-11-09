@@ -47,6 +47,8 @@ jobs:
           [ "$SCOPE" = "patch" ] && echo "$LOG" | grep -E '^feat(\(|:)' && SCOPE=minor || true
           echo "SCOPE=$SCOPE" >> $GITHUB_OUTPUT
 
+      - name: Make wrapper executable
+        run: chmod +x ./gradlew
       - name: Axion release (tag & version)
         run: ./gradlew release -Prelease.scope=${{ steps.scope.outputs.SCOPE }} -Prelease.disableSnapshotsCheck --stacktrace
       - name: Read version
